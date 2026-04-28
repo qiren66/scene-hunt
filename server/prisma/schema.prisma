@@ -1,0 +1,182 @@
+// SceneHunt Database Schema
+// 开发环境: SQLite | 生产环境: PostgreSQL + PostGIS
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 核心业务表
+// ============================================
+
+/// 影视作品表
+model Work {
+  id          String     @id @default(cuid())
+  title       String     // 作品名
+  titleEn     String?    // 英文名/原名
+  year        Int        @default(0) // 上映年份（anitabi 无此数据时为 0）
+  director    String     @default("") // 导演
+  genre       String     @default("[]") // 类型标签，JSON 数组格式: ["犯罪","剧情"]
+  description String     @default("") // 剧情简介
+  poster      String     @default("") // 海报图 URL
+  color       String     @default("#D4AF37") // 作品主色（地图标记用）
+
+  // Anitabi 扩展字段
+  city        String?    // 巡礼城市
+  latitude    Float      @default(0) // 默认中心点纬度
+  longitude   Float      @default(0) // 默认中心点经度
+  zoom        Float      @default(5) // 默认缩放级别
+
+  // 统计字段（通过触发器或应用层维护）
+  locationCount Int      @default(0) // 取景地数量
+
+  // 元数据
+  source      String     @default("local") // 数据来源: local / anitabi / tmdb
+  sourceId    String?    // 来源平台 ID（anitabi 为 bangumi subjectId）
+  syncedAt    DateTime?  // 最后同步时间
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // 关联
+  locations   Location[]
+  actors      WorkActor[]
+
+  @@index([title])
+  @@index([source, sourceId])
+  @@index([source])
+}
+
+/// 演员表
+model Actor {
+  id     String       @id @default(cuid())
+  name   String       @unique // 演员名
+  nameEn String?      // 英文名
+
+  // 关联
+  works  WorkActor[]
+}
+
+/// 作品-演员关联表（多对多）
+model WorkActor {
+  workId  String
+  actorId String
+  role    String?  // 角色名
+
+  work    Work     @relation(fields: [workId], references: [id], onDelete: Cascade)
+  actor   Actor    @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@id([workId, actorId])
+}
+
+/// 取景地/地标表
+model Location {
+  id          String   @id @default(cuid())
+  workId      String   // 所属作品 ID
+  name        String   // 地点名称
+  cn          String?  // 中文名称（anitabi 特有）
+  address     String   @default("") // 详细地址
+  latitude    Float    // 纬度 (WGS84)
+  longitude   Float    // 经度 (WGS84)
+
+  // 剧中信息
+  sceneDescription String @default("") // 剧情描述
+  episode         String? // 出现集数: "第1-3集"
+  timestamp       String? // 时间戳: "00:15:30"
+  screenshotUrl   String  @default("") // 剧中截图 URL
+  realPhotoUrl    String  @default("") // 实景照片 URL
+  behindStory     String? // 幕后故事
+
+  // Anitabi 扩展字段
+  ep            Int?     // 集数（数字）
+  s             Int?     // 截图时间（秒）
+  origin        String?  // 截图来源标注（如 "Google Maps"）
+  originURL     String?  // 截图来源原始链接
+
+  // 标签（JSON 数组格式: ["室外","经典","市场"]）
+  tags        String   @default("[]")
+
+  // 排序与状态
+  sortOrder   Int      @default(0) // 排序权重
+  status      String   @default("active") // active / pending / archived
+
+  // 元数据
+  source      String   @default("local")
+  sourceId    String?  // 来源平台地标 ID
+  createdBy   String?  // 创建者 ID（UGC 时使用）
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 关联
+  work        Work     @relation(fields: [workId], references: [id], onDelete: Cascade)
+  favorites   Favorite[]
+
+  @@index([workId])
+  @@index([name])
+  @@index([latitude, longitude])
+  @@index([status])
+  @@index([source, sourceId])
+}
+
+// ============================================
+// 用户与社区表（第二阶段启用）
+// ============================================
+
+/// 用户表
+model User {
+  id            String    @id @default(cuid())
+  nickname      String
+  avatar        String?
+  openid        String?   @unique // 微信 OpenID
+  phone         String?   @unique
+  role          String    @default("explorer") // explorer / curator / admin
+
+  // 统计
+  checkInCount  Int       @default(0)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  favorites     Favorite[]
+}
+
+/// 收藏/打卡记录表
+model Favorite {
+  id         String   @id @default(cuid())
+  userId     String?
+  locationId String
+  type       String   // want_to_go / checked_in
+  note       String?  // 个人备注
+  photoUrl   String?  // 打卡照片 URL
+
+  createdAt  DateTime @default(now())
+
+  // 关联
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, locationId, type])
+  @@index([userId])
+  @@index([locationId])
+  @@index([type])
+}
+
+/// 主题路线表（付费功能）
+model Route {
+  id          String    @id @default(cuid())
+  title       String    // 路线名
+  description String    // 路线描述
+  coverImage  String    // 封面图
+  price       Int       @default(0) // 价格（分），0 为免费
+  locationIds String    // 取景地 ID 列表，JSON 数组: ["id1","id2"]
+  duration    String?   // 预计时长: "一日游"
+  transport   String?   // 交通方式: "自驾/公共交通"
+
+  isPublished Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}

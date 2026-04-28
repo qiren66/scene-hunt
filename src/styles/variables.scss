@@ -1,0 +1,45 @@
+// 电影胶片质感配色
+$color-bg: #0D0D0D;
+$color-bg-card: #1A1A2E;
+$color-bg-card-hover: #222240;
+$color-accent: #D4AF37;
+$color-accent-dark: #B8962E;
+$color-danger: #8B0000;
+$color-danger-light: #A52A2A;
+$color-text: #E8E8E8;
+$color-text-secondary: #888888;
+$color-text-muted: #555555;
+$color-border: #2A2A3E;
+$color-overlay: rgba(13, 13, 13, 0.85);
+
+// 字体大小
+$fs-hero: 36px;
+$fs-title: 32px;
+$fs-subtitle: 28px;
+$fs-body: 26px;
+$fs-caption: 22px;
+$fs-tag: 20px;
+
+// 间距
+$spacing-xs: 4px;
+$spacing-sm: 8px;
+$spacing-md: 16px;
+$spacing-lg: 24px;
+$spacing-xl: 32px;
+$spacing-2xl: 48px;
+
+// 圆角
+$radius-sm: 8px;
+$radius-md: 12px;
+$radius-lg: 16px;
+$radius-xl: 24px;
+$radius-full: 999px;
+
+// 安全区域
+$safe-top: env(safe-area-inset-top, 0px);
+$safe-bottom: env(safe-area-inset-bottom, 0px);
+
+// 过渡
+$transition-fast: 0.15s ease;
+$transition-normal: 0.3s ease;
+$transition-slow: 0.5s ease;
