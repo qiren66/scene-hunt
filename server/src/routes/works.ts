@@ -1,7 +1,4 @@
 import { FastifyInstance } from 'fastify'
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
 
 export default async function workRoutes(app: FastifyInstance) {
   // 获取作品列表
@@ -13,7 +10,7 @@ export default async function workRoutes(app: FastifyInstance) {
     const where = source ? { source } : {}
 
     const [works, total] = await Promise.all([
-      prisma.work.findMany({
+      app.prisma.work.findMany({
         where,
         skip,
         take,
@@ -23,7 +20,7 @@ export default async function workRoutes(app: FastifyInstance) {
           _count: { select: { locations: true } },
         },
       }),
-      prisma.work.count({ where }),
+      app.prisma.work.count({ where }),
     ])
 
     return {
@@ -49,7 +46,7 @@ export default async function workRoutes(app: FastifyInstance) {
   app.get('/:id', async (req) => {
     const { id } = req.params as any
 
-    const work = await prisma.work.findUnique({
+    const work = await app.prisma.work.findUnique({
       where: { id },
       include: {
         actors: { include: { actor: true } },
@@ -85,7 +82,7 @@ export default async function workRoutes(app: FastifyInstance) {
     // 确保演员存在
     const actorRecords = await Promise.all(
       (body.actors || []).map(async (name: string) => {
-        return prisma.actor.upsert({
+        return app.prisma.actor.upsert({
           where: { name },
           update: {},
           create: { name },
@@ -93,7 +90,7 @@ export default async function workRoutes(app: FastifyInstance) {
       })
     )
 
-    const work = await prisma.work.create({
+    const work = await app.prisma.work.create({
       data: {
         title: body.title,
         titleEn: body.titleEn,
@@ -125,7 +122,7 @@ export default async function workRoutes(app: FastifyInstance) {
     const { id } = req.params as any
     const body = req.body as any
 
-    const work = await prisma.work.update({
+    const work = await app.prisma.work.update({
       where: { id },
       data: {
         title: body.title,
@@ -146,7 +143,7 @@ export default async function workRoutes(app: FastifyInstance) {
   app.delete('/:id', async (req) => {
     const { id } = req.params as any
 
-    await prisma.work.delete({ where: { id } })
+    await app.prisma.work.delete({ where: { id } })
     return { success: true }
   })
 
@@ -159,7 +156,7 @@ export default async function workRoutes(app: FastifyInstance) {
     if (status) where.status = status
     if (tag) where.tags = { contains: tag }
 
-    const locations = await prisma.location.findMany({
+    const locations = await app.prisma.location.findMany({
       where,
       orderBy: { sortOrder: 'asc' },
     })

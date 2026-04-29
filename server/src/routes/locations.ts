@@ -1,7 +1,4 @@
 import { FastifyInstance } from 'fastify'
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
 
 export default async function locationRoutes(app: FastifyInstance) {
   // 获取取景地列表（支持分页和筛选）
@@ -16,7 +13,7 @@ export default async function locationRoutes(app: FastifyInstance) {
     if (tag) where.tags = { contains: tag }
 
     const [locations, total] = await Promise.all([
-      prisma.location.findMany({
+      app.prisma.location.findMany({
         where,
         skip,
         take,
@@ -25,7 +22,7 @@ export default async function locationRoutes(app: FastifyInstance) {
           work: { select: { id: true, title: true, color: true } },
         },
       }),
-      prisma.location.count({ where }),
+      app.prisma.location.count({ where }),
     ])
 
     return {
@@ -46,7 +43,7 @@ export default async function locationRoutes(app: FastifyInstance) {
   app.get('/:id', async (req) => {
     const { id } = req.params as any
 
-    const location = await prisma.location.findUnique({
+    const location = await app.prisma.location.findUnique({
       where: { id },
       include: {
         work: true,
@@ -71,7 +68,7 @@ export default async function locationRoutes(app: FastifyInstance) {
   app.post('/', async (req) => {
     const body = req.body as any
 
-    const location = await prisma.location.create({
+    const location = await app.prisma.location.create({
       data: {
         workId: body.workId,
         name: body.name,
@@ -92,7 +89,7 @@ export default async function locationRoutes(app: FastifyInstance) {
     })
 
     // 更新作品的取景地计数
-    await prisma.work.update({
+    await app.prisma.work.update({
       where: { id: body.workId },
       data: { locationCount: { increment: 1 } },
     })
@@ -105,7 +102,7 @@ export default async function locationRoutes(app: FastifyInstance) {
     const { id } = req.params as any
     const body = req.body as any
 
-    const location = await prisma.location.update({
+    const location = await app.prisma.location.update({
       where: { id },
       data: {
         name: body.name,
@@ -130,10 +127,10 @@ export default async function locationRoutes(app: FastifyInstance) {
   app.delete('/:id', async (req) => {
     const { id } = req.params as any
 
-    const location = await prisma.location.delete({ where: { id } })
+    const location = await app.prisma.location.delete({ where: { id } })
 
     // 更新作品取景地计数
-    await prisma.work.update({
+    await app.prisma.work.update({
       where: { id: location.workId },
       data: { locationCount: { decrement: 1 } },
     })
@@ -155,7 +152,7 @@ export default async function locationRoutes(app: FastifyInstance) {
     const latDelta = radiusKm / 111
     const lngDelta = radiusKm / (111 * Math.cos(latNum * Math.PI / 180))
 
-    const locations = await prisma.location.findMany({
+    const locations = await app.prisma.location.findMany({
       where: {
         latitude: { gte: latNum - latDelta, lte: latNum + latDelta },
         longitude: { gte: lngNum - lngDelta, lte: lngNum + lngDelta },

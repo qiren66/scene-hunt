@@ -24,6 +24,7 @@ model Work {
   genre       String     @default("[]") // 类型标签，JSON 数组格式: ["犯罪","剧情"]
   description String     @default("") // 剧情简介
   poster      String     @default("") // 海报图 URL
+  posterLocal String?    // 本地封面路径: /images/bangumi/437593.jpg
   color       String     @default("#D4AF37") // 作品主色（地图标记用）
 
   // Anitabi 扩展字段
@@ -88,6 +89,7 @@ model Location {
   episode         String? // 出现集数: "第1-3集"
   timestamp       String? // 时间戳: "00:15:30"
   screenshotUrl   String  @default("") // 剧中截图 URL
+  screenshotLocal String? // 本地截图路径: /images/points/437593/xxx.jpg
   realPhotoUrl    String  @default("") // 实景照片 URL
   behindStory     String? // 幕后故事
 

@@ -322,7 +322,7 @@ export function createImagePopup(
 
 /** Google 街景 URL */
 export function getStreetViewUrl(lat: number, lng: number): string {
-  return `https://www.google.com/maps/@${lat},${lng},3a,75y,0h,90t/data=!3m6!1e1!3m4!1sAF1QipN...!2e10!7i16384!8i8192`
+  return `https://www.google.com/maps/@${lat},${lng},3a,75y,0h,90t/data=!3m6!1e1!3m4!1sAF1QipNm2T4q1Y6qZ1E0xWJ7H8I9J0K1L2M3N4O5P6!2e10!7i16384!8i8192`
 }
 
 /** Google Maps 打开位置 URL */

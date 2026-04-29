@@ -1,13 +1,18 @@
 /**
  * Anitabi 数据同步服务
  * 从 api.anitabi.cn 拉取数据并写入本地数据库
- * 支持：全量同步、增量同步
+ * 支持：全量同步、增量同步、图片下载
  */
 
 import { PrismaClient } from '@prisma/client'
+import fs from 'fs/promises'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const prisma = new PrismaClient()
 const API_BASE = 'https://api.anitabi.cn'
+const IMAGES_DIR = path.join(__dirname, '../../public/images')
 
 // ============================================
 // Anitabi API 类型定义
@@ -85,14 +90,77 @@ async function fetchWithRetry(url: string, retries = 3, timeoutMs = 60000): Prom
 }
 
 // ============================================
+// 图片下载
+// ============================================
+
+/** 下载图片到本地 */
+async function downloadImage(url: string, localRelativePath: string): Promise<string | null> {
+  if (!url) return null
+
+  const fullPath = path.join(IMAGES_DIR, localRelativePath)
+  
+  // 检查文件是否已存在
+  try {
+    await fs.access(fullPath)
+    return `/images/${localRelativePath}` // 已存在，直接返回路径
+  } catch {
+    // 文件不存在，继续下载
+  }
+
+  // 确保目录存在
+  const dir = path.dirname(fullPath)
+  await fs.mkdir(dir, { recursive: true })
+
+  // 下载图片（最多重试 2 次）
+  for (let i = 0; i < 2; i++) {
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(30000),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+      const buffer = await res.arrayBuffer()
+      await fs.writeFile(fullPath, Buffer.from(buffer))
+      return `/images/${localRelativePath}`
+    } catch (err) {
+      if (i === 1) {
+        console.warn(`    ⚠️ 图片下载失败: ${url}`)
+        return null
+      }
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
+  return null
+}
+
+/** 下载作品封面图 */
+async function downloadPoster(sourceId: string, coverUrl: string): Promise<string | null> {
+  if (!coverUrl) return null
+  // 从 URL 中提取文件扩展名
+  const ext = coverUrl.includes('.png') ? '.png' : '.jpg'
+  const localPath = `bangumi/${sourceId}${ext}`
+  return downloadImage(coverUrl, localPath)
+}
+
+/** 下载地标截图 */
+async function downloadPointImage(sourceId: string, pointId: string, imageUrl: string): Promise<string | null> {
+  if (!imageUrl) return null
+  const ext = imageUrl.includes('.png') ? '.png' : '.jpg'
+  const localPath = `points/${sourceId}/${pointId}${ext}`
+  return downloadImage(imageUrl, localPath)
+}
+
+// ============================================
 // 同步逻辑
 // ============================================
 
 export interface SyncProgress {
-  phase: 'fetching_list' | 'syncing_works' | 'done' | 'error'
+  phase: 'fetching_list' | 'syncing_works' | 'downloading_images' | 'done' | 'error'
   total: number
   current: number
   currentWork?: string
+  imagesDownloaded: number
+  imagesFailed: number
   errors: string[]
 }
 
@@ -105,6 +173,8 @@ export async function fullSync(
     phase: 'fetching_list',
     total: 0,
     current: 0,
+    imagesDownloaded: 0,
+    imagesFailed: 0,
     errors,
   }
 
@@ -134,8 +204,12 @@ export async function fullSync(
       onProgress?.(progress)
 
       try {
-        await syncOneWork(brief)
-        console.log(`  ✅ [${i + 1}/${list.length}] ${brief.cn}`)
+        const result = await syncOneWork(brief, () => {
+          onProgress?.(progress)
+        })
+        progress.imagesDownloaded += result.imagesDownloaded
+        progress.imagesFailed += result.imagesFailed
+        console.log(`  ✅ [${i + 1}/${list.length}] ${brief.cn} (图片: ${result.imagesDownloaded}张)`)
       } catch (err: any) {
         const msg = `${brief.cn} (${brief.id}): ${err.message}`
         errors.push(msg)
@@ -151,6 +225,7 @@ export async function fullSync(
     progress.phase = 'done'
     onProgress?.(progress)
     console.log(`\n🎉 同步完成！成功 ${list.length - errors.length}/${list.length}，失败 ${errors.length}`)
+    console.log(`📸 图片下载: 成功 ${progress.imagesDownloaded}，失败 ${progress.imagesFailed}`)
   } catch (err: any) {
     progress.phase = 'error'
     errors.push(`全局错误: ${err.message}`)
@@ -170,6 +245,8 @@ export async function incrementalSync(
     phase: 'fetching_list',
     total: 0,
     current: 0,
+    imagesDownloaded: 0,
+    imagesFailed: 0,
     errors,
   }
 
@@ -230,8 +307,12 @@ export async function incrementalSync(
       onProgress?.(progress)
 
       try {
-        await syncOneWork(brief)
-        console.log(`  ✅ [${i + 1}/${needSync.length}] ${brief.cn}`)
+        const result = await syncOneWork(brief, () => {
+          onProgress?.(progress)
+        })
+        progress.imagesDownloaded += result.imagesDownloaded
+        progress.imagesFailed += result.imagesFailed
+        console.log(`  ✅ [${i + 1}/${needSync.length}] ${brief.cn} (图片: ${result.imagesDownloaded}张)`)
       } catch (err: any) {
         errors.push(`${brief.cn} (${brief.id}): ${err.message}`)
         console.warn(`  ❌ [${i + 1}/${needSync.length}] ${brief.cn}: ${err.message}`)
@@ -245,6 +326,7 @@ export async function incrementalSync(
     progress.phase = 'done'
     onProgress?.(progress)
     console.log(`\n🎉 增量同步完成！更新 ${needSync.length - errors.length}，跳过 ${skipped}，失败 ${errors.length}`)
+    console.log(`📸 图片下载: 成功 ${progress.imagesDownloaded}，失败 ${progress.imagesFailed}`)
 
     return { synced: needSync.length - errors.length, skipped, errors }
   } catch (err: any) {
@@ -255,9 +337,14 @@ export async function incrementalSync(
   }
 }
 
-/** 同步单部作品 */
-async function syncOneWork(brief: AnitabiBangumiBrief): Promise<void> {
+/** 同步单部作品（含图片下载） */
+async function syncOneWork(
+  brief: AnitabiBangumiBrief,
+  onImageDownloaded?: () => void
+): Promise<{ imagesDownloaded: number; imagesFailed: number }> {
   const sourceId = String(brief.id)
+  let imagesDownloaded = 0
+  let imagesFailed = 0
 
   // 1. 获取作品 lite 数据（包含前10个地标）
   const lite: AnitabiBangumiLite = await fetchWithRetry(
@@ -273,13 +360,19 @@ async function syncOneWork(brief: AnitabiBangumiBrief): Promise<void> {
   // 3. 合并地标数据：详情优先，lite 补充
   const allPoints = mergePoints(lite.litePoints, detailPoints)
 
-  // 4. Upsert 作品
+  // 4. 下载封面图
+  const posterLocal = await downloadPoster(sourceId, lite.cover)
+  if (posterLocal) imagesDownloaded++
+  else imagesFailed++
+
+  // 5. Upsert 作品（包含本地封面路径）
   const work = await prisma.work.upsert({
     where: { source_sourceId: { source: 'anitabi', sourceId } },
     update: {
       title: lite.cn,
       titleEn: lite.title,
       poster: lite.cover,
+      posterLocal: posterLocal,
       color: lite.color,
       city: lite.city || null,
       latitude: lite.geo[0],
@@ -292,6 +385,7 @@ async function syncOneWork(brief: AnitabiBangumiBrief): Promise<void> {
       title: lite.cn,
       titleEn: lite.title,
       poster: lite.cover,
+      posterLocal: posterLocal,
       color: lite.color,
       city: lite.city || null,
       latitude: lite.geo[0],
@@ -304,21 +398,30 @@ async function syncOneWork(brief: AnitabiBangumiBrief): Promise<void> {
     },
   })
 
-  // 5. 删除旧地标并重新插入（简化增量更新）
+  // 6. 删除旧地标并重新插入（简化增量更新）
   await prisma.location.deleteMany({
     where: { workId: work.id, source: 'anitabi' },
   })
 
-  // 6. 批量创建地标
+  // 7. 下载地标截图并创建地标记录
   if (allPoints.length > 0) {
-    await prisma.location.createMany({
-      data: allPoints.map((point, index) => ({
+    const locationData = []
+    for (const [index, point] of allPoints.entries()) {
+      // 下载截图
+      const screenshotLocal = await downloadPointImage(sourceId, point.id, point.image)
+      if (screenshotLocal) imagesDownloaded++
+      else imagesFailed++
+      
+      onImageDownloaded?.()
+
+      locationData.push({
         workId: work.id,
         name: point.cn || point.name,
         cn: point.cn || null,
         latitude: point.geo[0],
         longitude: point.geo[1],
         screenshotUrl: point.image || '',
+        screenshotLocal: screenshotLocal,
         episode: point.ep != null ? `第${point.ep}话` : null,
         ep: point.ep ?? null,
         s: point.s ?? null,
@@ -327,9 +430,12 @@ async function syncOneWork(brief: AnitabiBangumiBrief): Promise<void> {
         sortOrder: index,
         source: 'anitabi',
         sourceId: point.id,
-      })),
-    })
+      })
+    }
+    await prisma.location.createMany({ data: locationData })
   }
+
+  return { imagesDownloaded, imagesFailed }
 }
 
 /** 合并 lite 和 detail 地标数据 */
@@ -374,21 +480,147 @@ export async function getSyncStatus() {
   }
 }
 
+/** 只下载图片（不重新同步数据） */
+export async function downloadImagesOnly(
+  onProgress?: (progress: SyncProgress) => void
+): Promise<{ downloaded: number; failed: number; errors: string[] }> {
+  const errors: string[] = []
+  const progress: SyncProgress = {
+    phase: 'downloading_images',
+    total: 0,
+    current: 0,
+    imagesDownloaded: 0,
+    imagesFailed: 0,
+    errors,
+  }
+
+  try {
+    // 1. 获取所有没有本地封面的作品
+    const works = await prisma.work.findMany({
+      where: {
+        source: 'anitabi',
+        OR: [
+          { posterLocal: null },
+          { posterLocal: '' },
+        ],
+      },
+      select: {
+        id: true,
+        title: true,
+        sourceId: true,
+        poster: true,
+      },
+    })
+
+    // 2. 获取所有没有本地截图的地标
+    const locations = await prisma.location.findMany({
+      where: {
+        source: 'anitabi',
+        OR: [
+          { screenshotLocal: null },
+          { screenshotLocal: '' },
+        ],
+      },
+      select: {
+        id: true,
+        name: true,
+        sourceId: true,
+        screenshotUrl: true,
+        work: {
+          select: { sourceId: true },
+        },
+      },
+    })
+
+    progress.total = works.length + locations.length
+    console.log(`📋 需要下载: ${works.length} 个封面, ${locations.length} 个截图`)
+
+    // 3. 下载封面图
+    for (const work of works) {
+      progress.current++
+      progress.currentWork = work.title
+      onProgress?.(progress)
+
+      try {
+        const posterLocal = await downloadPoster(work.sourceId!, work.poster)
+        if (posterLocal) {
+          await prisma.work.update({
+            where: { id: work.id },
+            data: { posterLocal },
+          })
+          progress.imagesDownloaded++
+        } else {
+          progress.imagesFailed++
+        }
+      } catch (err: any) {
+        errors.push(`封面 ${work.title}: ${err.message}`)
+        progress.imagesFailed++
+      }
+    }
+
+    // 4. 下载地标截图
+    for (const loc of locations) {
+      progress.current++
+      progress.currentWork = loc.name
+      onProgress?.(progress)
+
+      try {
+        const sourceId = loc.work.sourceId
+        if (!sourceId) continue
+
+        const screenshotLocal = await downloadPointImage(sourceId, loc.sourceId!, loc.screenshotUrl)
+        if (screenshotLocal) {
+          await prisma.location.update({
+            where: { id: loc.id },
+            data: { screenshotLocal },
+          })
+          progress.imagesDownloaded++
+        } else {
+          progress.imagesFailed++
+        }
+      } catch (err: any) {
+        errors.push(`截图 ${loc.name}: ${err.message}`)
+        progress.imagesFailed++
+      }
+    }
+
+    progress.phase = 'done'
+    onProgress?.(progress)
+    console.log(`\n🎉 图片下载完成！成功 ${progress.imagesDownloaded}，失败 ${progress.imagesFailed}`)
+
+    return { downloaded: progress.imagesDownloaded, failed: progress.imagesFailed, errors }
+  } catch (err: any) {
+    progress.phase = 'error'
+    errors.push(`全局错误: ${err.message}`)
+    onProgress?.(progress)
+    return { downloaded: 0, failed: 0, errors }
+  }
+}
+
 // ============================================
 // CLI 直接运行
 // ============================================
 
 if (process.argv[1]?.includes('anitabi-sync')) {
   const mode = process.argv[2] || 'full'
-  console.log(`🔄 开始${mode === 'incremental' ? '增量' : '全量'}同步...`)
+  console.log(`🔄 开始${mode === 'incremental' ? '增量' : mode === 'images-only' ? '图片下载' : '全量'}同步...`)
 
-  const syncFn = mode === 'incremental' ? incrementalSync : fullSync
-  const result = await syncFn((p) => {
-    if (p.phase === 'syncing_works') {
-      process.stdout.write(`\r  ${p.current}/${p.total} ${p.currentWork || ''}`)
-    }
-  })
+  if (mode === 'images-only') {
+    const result = await downloadImagesOnly((p) => {
+      if (p.phase === 'downloading_images') {
+        process.stdout.write(`\r  ${p.current}/${p.total} ${p.currentWork || ''} | ✅${p.imagesDownloaded} ❌${p.imagesFailed}`)
+      }
+    })
+    console.log('\n结果:', result)
+  } else {
+    const syncFn = mode === 'incremental' ? incrementalSync : fullSync
+    const result = await syncFn((p) => {
+      if (p.phase === 'syncing_works') {
+        process.stdout.write(`\r  ${p.current}/${p.total} ${p.currentWork || ''}`)
+      }
+    })
+    console.log('\n结果:', result)
+  }
 
-  console.log('\n结果:', result)
   await prisma.$disconnect()
 }

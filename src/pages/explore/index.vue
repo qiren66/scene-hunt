@@ -31,14 +31,20 @@
             class="search-result-item"
             @mousedown.prevent="selectSearchResult(work)"
           >
-            <div class="result-dot" :style="{ background: work.color }"></div>
+            <img
+              :src="resolveImageUrl(work.poster)"
+              :alt="work.title"
+              class="result-poster"
+              loading="lazy"
+              @error="onPosterError"
+            />
             <div class="result-info">
               <span class="result-title">{{ work.title }}</span>
               <span class="result-meta">{{ work.locationCount }} 地点 · {{ work.city || '日本' }}</span>
             </div>
           </div>
         </div>
-        <div v-else-if="searchQuery && searchResults.length === 0 && !isSearching" class="search-dropdown">
+        <div v-else-if="searchQuery && searchResults.length === 0 && !isSearching && !searchSelected" class="search-dropdown">
           <div class="search-empty">未找到匹配的作品</div>
         </div>
       </div>
@@ -64,17 +70,20 @@
         <button class="panel-close" @click="panelOpen = false">✕</button>
       </div>
 
-      <div class="panel-body">
+      <div ref="panelBodyRef" class="panel-body" @scroll="onPanelScroll">
         <!-- 加载进度 -->
         <div v-if="loadingProgress < 100" class="progress-bar">
           <div class="progress-fill" :style="{ width: loadingProgress + '%' }"></div>
           <span class="progress-text">{{ loadedCount }}/{{ totalCount }}</span>
         </div>
 
-        <!-- 作品列表 -->
-        <div class="work-list">
+        <!-- 虚拟滚动容器 -->
+        <div class="virtual-scroll-container" :style="{ height: virtualHeight + 'px' }">
+          <div class="virtual-scroll-spacer" :style="{ height: spacerTop + 'px' }"></div>
+
+          <!-- 只渲染可视区域内的作品 -->
           <div
-            v-for="item in anitabiWorks"
+            v-for="item in visibleWorks"
             :key="item.id"
             class="work-item"
             :class="{ active: hoveredWorkId === item.id }"
@@ -82,7 +91,17 @@
             @mouseleave="unhighlightWork()"
             @click="flyToWork(item)"
           >
-            <div class="work-dot" :style="{ background: item.color }"></div>
+            <div class="work-poster-wrapper">
+              <img
+                v-if="item.isVisible"
+                :src="item.poster"
+                :alt="item.title"
+                class="work-poster"
+                loading="lazy"
+                @error="onPosterError"
+              />
+              <div v-else class="work-poster-placeholder"></div>
+            </div>
             <div class="work-info">
               <span class="work-name">{{ item.title }}</span>
               <span class="work-meta">{{ item.locationCount }} 地点 · {{ item.city || '日本' }}</span>
@@ -134,7 +153,9 @@ import {
 } from '@/utils/leaflet-map'
 import type { Map as LeafletMap } from 'leaflet'
 import type { MapStyle } from '@/utils/leaflet-map'
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001/api'
+const IMAGE_BASE = 'http://localhost:3001'
 
 // === 本地后端数据类型 ===
 interface MapLocation {
@@ -169,6 +190,7 @@ interface MapWork {
 
 // === State ===
 const mapEl = ref<HTMLDivElement>()
+const panelBodyRef = ref<HTMLDivElement>()
 const panelOpen = ref(false)
 const currentStyle = ref<MapStyle>('satellite')
 const loading = ref(false)
@@ -185,6 +207,13 @@ const searchFocused = ref(false)
 const isSearching = ref(false)
 const searchResults = ref<MapWork[]>([])
 const selectedWorkId = ref<string | null>(null)
+const searchSelected = ref(false)
+
+// === 虚拟滚动状态 ===
+const ITEM_HEIGHT = 110 // 每个作品项的高度（padding 10+10 + 图片 90）
+const BUFFER_SIZE = 5 // 上下缓冲区域渲染的项数
+const scrollTop = ref(0)
+const containerHeight = ref(600)
 
 // Map internals
 let map: LeafletMap | null = null
@@ -195,15 +224,53 @@ const loadingProgress = computed(() =>
   totalCount.value > 0 ? Math.round((loadedCount.value / totalCount.value) * 100) : 0
 )
 
+// === 虚拟滚动计算 ===
+const virtualHeight = computed(() => anitabiWorks.value.length * ITEM_HEIGHT)
+
+const visibleRange = computed(() => {
+  const startIdx = Math.max(0, Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE)
+  const endIdx = Math.min(
+    anitabiWorks.value.length,
+    Math.ceil((scrollTop.value + containerHeight.value) / ITEM_HEIGHT) + BUFFER_SIZE
+  )
+  return { startIdx, endIdx }
+})
+
+const spacerTop = computed(() => visibleRange.value.startIdx * ITEM_HEIGHT)
+
+const visibleWorks = computed(() => {
+  const { startIdx, endIdx } = visibleRange.value
+  return anitabiWorks.value.slice(startIdx, endIdx).map((work, idx) => ({
+    ...work,
+    isVisible: true,
+    _virtualIndex: startIdx + idx,
+  }))
+})
+
 onMounted(() => {
   initMap()
   loadAllDataProgressive()
+  updateContainerHeight()
+  window.addEventListener('resize', updateContainerHeight)
 })
 
 onUnmounted(() => {
   allMarkers.forEach((m) => m.remove())
   map?.remove()
+  window.removeEventListener('resize', updateContainerHeight)
 })
+
+function updateContainerHeight() {
+  if (panelBodyRef.value) {
+    containerHeight.value = panelBodyRef.value.clientHeight
+  }
+}
+
+function onPanelScroll() {
+  if (panelBodyRef.value) {
+    scrollTop.value = panelBodyRef.value.scrollTop
+  }
+}
 
 // === 地图初始化 ===
 function initMap() {
@@ -226,8 +293,8 @@ async function loadAllDataProgressive() {
   let markerCount = 0
 
   try {
-    // 从本地后端获取所有作品和地标数据
-    const res = await fetch(`${API_BASE}/sync/map-data`)
+    // 从本地后端获取所有作品和地标数据（使用高清缩略图模式）
+    const res = await fetch(`${API_BASE}/sync/map-data?thumb=hd`)
     if (!res.ok) throw new Error(`API error: ${res.status}`)
     const json = await res.json()
     const works: MapWork[] = json.data || []
@@ -284,11 +351,14 @@ function addWorkMarkers(work: MapWork): L.CircleMarker[] {
 
     // hover 高亮
     marker.on('mouseover', () => {
-      marker.setStyle({ radius: 8, weight: 2.5, color: '#fff', fillOpacity: 1 })
-      marker.bringToFront()
+      // 只在标记可见时才高亮
+      if (marker._visible !== false) {
+        marker.setStyle({ radius: 8, weight: 2.5, color: '#fff', fillOpacity: 1 })
+        marker.bringToFront()
+      }
     })
     marker.on('mouseout', () => {
-      if (hoveredWorkId.value !== work.id) {
+      if (marker._visible !== false && hoveredWorkId.value !== work.id) {
         marker.setStyle({
           radius: 5,
           weight: 1.5,
@@ -313,7 +383,7 @@ function showPointPopup(
 ) {
   if (!map) return
 
-  const imageUrl = point.screenshotUrl ? getImageUrl(point.screenshotUrl, 'h360') : ''
+  const imageUrl = point.screenshotUrl ? getHDImageUrl(point.screenshotUrl, 720) : ''
   const title = point.cn || point.name
   const subtitle = `${work.title}${point.ep ? ` · 第${point.ep}话` : ''}`
 
@@ -327,11 +397,31 @@ function showPointPopup(
   marker.bindPopup(popup).openPopup()
 }
 
-/** 获取图片 URL（指定尺寸） */
-function getImageUrl(path: string, plan: 'h160' | 'h360' | 'original' = 'h160'): string {
-  if (!path || plan === 'original') return path
-  const sep = path.includes('?') ? '&' : '?'
-  return `${path}${sep}plan=${plan}`
+/** 获取高清图片 URL（通过后端 resize 接口，指定宽度） */
+function getHDImageUrl(path: string, width: number = 720): string {
+  if (!path) return ''
+  // 已经是 resize 路径的，替换参数
+  if (path.includes('/images/resize/')) {
+    return path.replace(/w=\d+/, `w=${width}`).replace(/q=\d+/, 'q=90')
+  }
+  // 本地图片路径
+  if (path.startsWith('/images/')) {
+    return `${IMAGE_BASE}/images/resize/${path.replace('/images/', '')}?w=${width}&q=90`
+  }
+  // 外部 URL（anitabi 等）
+  if (path.startsWith('http')) {
+    const sep = path.includes('?') ? '&' : '?'
+    return `${path}${sep}plan=h720`
+  }
+  return path
+}
+
+/** 解析图片 URL：本地路径补全为完整 URL */
+function resolveImageUrl(path: string): string {
+  if (!path) return ''
+  if (path.startsWith('http')) return path
+  if (path.startsWith('/images/')) return `${IMAGE_BASE}${path}`
+  return path
 }
 
 // === 飞到作品区域 ===
@@ -411,6 +501,7 @@ function resetView() {
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 function onSearchInput() {
+  searchSelected.value = false
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
     performSearch()
@@ -446,6 +537,7 @@ function selectSearchResult(work: MapWork) {
   selectedWorkId.value = work.id
   searchQuery.value = work.title
   searchResults.value = []
+  searchSelected.value = true
 
   // 隐藏所有标记，只显示选中作品的标记
   showOnlyWork(work.id)
@@ -458,6 +550,7 @@ function showOnlyWork(workId: string) {
   // 隐藏所有标记
   for (const marker of allMarkers) {
     marker.setStyle({ opacity: 0, fillOpacity: 0 })
+    marker._visible = false
   }
 
   // 只显示选中作品的标记
@@ -474,9 +567,12 @@ function showOnlyWork(workId: string) {
         weight: 2,
         color: '#fff',
       })
+      m._visible = true
       m.bringToFront()
     })
     totalMarkers.value = markers.length
+  } else {
+    console.warn(`No markers found for workId: ${workId}`)
   }
 }
 
@@ -484,6 +580,7 @@ function clearSearchFilter() {
   selectedWorkId.value = null
   searchQuery.value = ''
   searchResults.value = []
+  searchSelected.value = false
 
   // 恢复所有标记显示
   for (const [workId, markers] of workMarkerMap) {
@@ -498,6 +595,7 @@ function clearSearchFilter() {
         weight: 1.5,
         color: 'rgba(255,255,255,0.7)',
       })
+      m._visible = undefined // 重置可见性标记
     })
   }
 
@@ -511,6 +609,12 @@ function clearSearchFilter() {
 
 function clearSearch() {
   clearSearchFilter()
+}
+
+/** 图片加载失败时的处理 */
+function onPosterError(e: Event) {
+  const img = e.target as HTMLImageElement
+  img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNTYiIHZpZXdCb3g9IjAgMCA0MCA1NiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNDAiIGhlaWdodD0iNTYiIHJ4PSI0IiBmaWxsPSIjMWExYTJlIi8+PHRleHQgeD0iMjAiIHk9IjMyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjNjY2IiBmb250LXNpemU9IjEyIj7npLrmn6XliqDovb08L3RleHQ+PC9zdmc+'
 }
 </script>
 
@@ -552,9 +656,11 @@ function clearSearch() {
   .map-popup {
     .popup-image {
       width: 100%;
-      height: 120px;
+      height: 160px;
       object-fit: cover;
       display: block;
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: crisp-edge;
     }
 
     .popup-content {
@@ -772,12 +878,16 @@ function clearSearch() {
   }
 }
 
-.result-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+.result-poster {
+  width: 32px;
+  height: 44px;
+  border-radius: 4px;
+  object-fit: cover;
   flex-shrink: 0;
-  border: 1.5px solid rgba(0, 0, 0, 0.1);
+  background: #1a1a2e;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edge;
 }
 
 .result-info {
@@ -846,7 +956,7 @@ function clearSearch() {
   left: 0;
   bottom: 0;
   z-index: 25;
-  width: 280px;
+  width: 360px;
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -923,6 +1033,7 @@ function clearSearch() {
   flex: 1;
   overflow-y: auto;
   padding: 8px;
+  position: relative;
 
   &::-webkit-scrollbar {
     width: 3px;
@@ -963,20 +1074,16 @@ function clearSearch() {
 }
 
 // 作品列表
-.work-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
 .work-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
   cursor: pointer;
   transition: background 0.15s;
+  height: 110px;
+  box-sizing: border-box;
 
   &:hover {
     background: rgba(0, 0, 0, 0.03);
@@ -987,12 +1094,44 @@ function clearSearch() {
   }
 }
 
-.work-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+.work-poster-wrapper {
+  width: 64px;
+  height: 90px;
   flex-shrink: 0;
-  border: 1.5px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1a1a2e;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.work-poster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edge;
+}
+
+.work-poster-placeholder {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+// === 虚拟滚动 ===
+.virtual-scroll-container {
+  position: relative;
+}
+
+.virtual-scroll-spacer {
+  flex-shrink: 0;
 }
 
 .work-info {
@@ -1004,8 +1143,8 @@ function clearSearch() {
 }
 
 .work-name {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: #1a1a2e;
   white-space: nowrap;
   overflow: hidden;
@@ -1013,7 +1152,7 @@ function clearSearch() {
 }
 
 .work-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: #999;
   white-space: nowrap;
   overflow: hidden;

@@ -1,7 +1,4 @@
 import { FastifyInstance } from 'fastify'
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
 
 export default async function searchRoutes(app: FastifyInstance) {
   // 全局搜索
@@ -20,7 +17,7 @@ export default async function searchRoutes(app: FastifyInstance) {
 
     // 搜索作品
     if (!type || type === 'work') {
-      const works = await prisma.work.findMany({
+      const works = await app.prisma.work.findMany({
         where: {
           OR: [
             { title: { contains: keyword } },
@@ -49,7 +46,7 @@ export default async function searchRoutes(app: FastifyInstance) {
 
     // 搜索取景地
     if (!type || type === 'location') {
-      const locations = await prisma.location.findMany({
+      const locations = await app.prisma.location.findMany({
         where: {
           OR: [
             { name: { contains: keyword } },
@@ -74,7 +71,7 @@ export default async function searchRoutes(app: FastifyInstance) {
 
     // 按演员搜索
     if (!type || type === 'work') {
-      const actorWorks = await prisma.workActor.findMany({
+      const actorWorks = await app.prisma.workActor.findMany({
         where: {
           actor: { name: { contains: keyword } },
         },

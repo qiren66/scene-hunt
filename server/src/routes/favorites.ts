@@ -1,7 +1,4 @@
 import { FastifyInstance } from 'fastify'
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
 
 export default async function favoriteRoutes(app: FastifyInstance) {
   // 获取收藏列表
@@ -13,7 +10,7 @@ export default async function favoriteRoutes(app: FastifyInstance) {
     if (type) where.type = type
     if (locationId) where.locationId = locationId
 
-    const favorites = await prisma.favorite.findMany({
+    const favorites = await app.prisma.favorite.findMany({
       where,
       include: {
         location: {
@@ -41,7 +38,7 @@ export default async function favoriteRoutes(app: FastifyInstance) {
     const body = req.body as any
 
     // upsert：如果已存在则更新
-    const favorite = await prisma.favorite.upsert({
+    const favorite = await app.prisma.favorite.upsert({
       where: {
         userId_locationId_type: {
           userId: body.userId || 'anonymous',
@@ -68,7 +65,7 @@ export default async function favoriteRoutes(app: FastifyInstance) {
   // 取消收藏
   app.delete('/:id', async (req) => {
     const { id } = req.params as any
-    await prisma.favorite.delete({ where: { id } })
+    await app.prisma.favorite.delete({ where: { id } })
     return { success: true }
   })
 
@@ -81,7 +78,7 @@ export default async function favoriteRoutes(app: FastifyInstance) {
     if (userId) where.userId = userId
     if (type) where.type = type
 
-    await prisma.favorite.deleteMany({ where })
+    await app.prisma.favorite.deleteMany({ where })
     return { success: true }
   })
 
@@ -92,8 +89,8 @@ export default async function favoriteRoutes(app: FastifyInstance) {
     const where = userId ? { userId } : {}
 
     const [wantToGo, checkedIn] = await Promise.all([
-      prisma.favorite.count({ where: { ...where, type: 'want_to_go' } }),
-      prisma.favorite.count({ where: { ...where, type: 'checked_in' } }),
+      app.prisma.favorite.count({ where: { ...where, type: 'want_to_go' } }),
+      app.prisma.favorite.count({ where: { ...where, type: 'checked_in' } }),
     ])
 
     return { wantToGo, checkedIn, total: wantToGo + checkedIn }

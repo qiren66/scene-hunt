@@ -1,8 +1,5 @@
 import { FastifyInstance } from 'fastify'
-import { PrismaClient } from '@prisma/client'
 import { fullSync, incrementalSync, getSyncStatus } from '../services/anitabi-sync.js'
-
-const prisma = new PrismaClient()
 
 export default async function syncRoutes(app: FastifyInstance) {
   // 获取同步状态
@@ -37,9 +34,15 @@ export default async function syncRoutes(app: FastifyInstance) {
 
   // 获取地图数据（作品 + 地标，供前端地图页使用）
   app.get('/map-data', async (req) => {
-    const { source } = req.query as any
+    const { source, thumb } = req.query as any
 
-    const works = await prisma.work.findMany({
+    // thumb 参数：是否返回缩略图URL
+    // 'true'/'1' = 标准缩略图（封面 120x168 q85，截图 360x270 q80）
+    // 'hd' = 高清缩略图（封面 240x336 q92，截图 720x540 q88）
+    const useThumb = thumb === 'true' || thumb === '1' || thumb === 'hd'
+    const isHD = thumb === 'hd'
+
+    const works = await app.prisma.work.findMany({
       where: source ? { source } : {},
       select: {
         id: true,
@@ -51,6 +54,7 @@ export default async function syncRoutes(app: FastifyInstance) {
         longitude: true,
         zoom: true,
         poster: true,
+        posterLocal: true,
         locationCount: true,
         source: true,
         sourceId: true,
@@ -62,6 +66,7 @@ export default async function syncRoutes(app: FastifyInstance) {
             latitude: true,
             longitude: true,
             screenshotUrl: true,
+            screenshotLocal: true,
             episode: true,
             ep: true,
             s: true,
@@ -75,9 +80,33 @@ export default async function syncRoutes(app: FastifyInstance) {
       orderBy: { locationCount: 'desc' },
     })
 
+    // 优先使用本地路径，并添加尺寸参数
     return {
       total: works.length,
-      data: works,
+      data: works.map(work => {
+        const posterUrl = work.posterLocal || work.poster
+        const screenshotBase = work.screenshotLocal || work.screenshotUrl
+
+        return {
+          ...work,
+          poster: useThumb && posterUrl.startsWith('/images/')
+            ? isHD
+              ? `/images/resize/${posterUrl.replace('/images/', '')}?w=240&h=336&q=92`
+              : `/images/resize/${posterUrl.replace('/images/', '')}?w=120&h=168&q=85`
+            : posterUrl,
+          locations: work.locations.map(loc => {
+            const locUrl = loc.screenshotLocal || loc.screenshotUrl
+            return {
+              ...loc,
+              screenshotUrl: useThumb && locUrl.startsWith('/images/')
+                ? isHD
+                  ? `/images/resize/${locUrl.replace('/images/', '')}?w=720&h=540&q=88`
+                  : `/images/resize/${locUrl.replace('/images/', '')}?w=360&h=270&q=80`
+                : locUrl,
+            }
+          }),
+        }
+      }),
     }
   })
 }
